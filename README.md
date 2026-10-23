@@ -83,6 +83,37 @@ curl -o ~/.local/bin/linux-voice https://raw.githubusercontent.com/williamjamesh
 chmod +x ~/.local/bin/linux-voice
 ```
 
+### macOS menu-bar app (VoiceBar)
+
+`macos/` holds a native Swift version for macOS: a menu-bar microphone icon, shortcuts set in a Settings window (click a field and press the keys), API keys in the Keychain, and Launch at login. It uses the system hotkey API, so held shortcuts never leak characters, and it needs only the Xcode Command Line Tools:
+
+```bash
+macos/build.sh          # builds and installs ~/Applications/VoiceBar.app
+open ~/Applications/VoiceBar.app
+macos/check.sh          # offline self-check; add --network to test the API key
+```
+
+On first launch it imports the hotkeys, backend, language, prompt and API key from `~/.config/linux-voice/config.toml`. Allow it under Privacy & Security › Accessibility (needed to paste) and Microphone. macOS ties these grants to the code signature, so `build.sh` signs with a local self-signed certificate named "VoiceBar Local Signing" when one is in the login keychain; without it the build is signed ad hoc and the grants are lost on every rebuild. To create the certificate once:
+
+```bash
+cat > /tmp/vb.cnf <<'EOF'
+[req]
+distinguished_name = dn
+x509_extensions = ext
+prompt = no
+[dn]
+CN = VoiceBar Local Signing
+[ext]
+basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+EOF
+/usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/vb.key -out /tmp/vb.pem -days 3650 -config /tmp/vb.cnf
+/usr/bin/openssl pkcs12 -export -inkey /tmp/vb.key -in /tmp/vb.pem -out /tmp/vb.p12 -passout pass:vb -name "VoiceBar Local Signing"
+security import /tmp/vb.p12 -k ~/Library/Keychains/login.keychain-db -P vb -T /usr/bin/codesign
+rm /tmp/vb.key /tmp/vb.p12
+``` Do not run it alongside the Python agent below, or both will react to the same shortcuts.
+
 ### macOS (from scratch)
 
 #### 1. Install system dependencies
@@ -96,7 +127,7 @@ brew install ffmpeg uv
 ```bash
 git clone https://github.com/williamjameshandley/linux-voice
 cd linux-voice
-uv sync --extra macos --extra groq   # or without --extra groq if using OpenAI
+uv sync --extra macos --extra groq   # drop --extra groq for OpenAI; add --extra claude for Claude corrections
 ```
 
 #### 3. Configure
@@ -251,6 +282,8 @@ Use Ctrl+Alt+Space (default) to correct the previous transcription using an LLM.
 
 The edit uses the backend's chat model (gpt-4o-mini for OpenAI, llama-3.3-70b-versatile for Groq). The LLM is aware of Unix/programming context and common voice recognition errors (cash→cache, bite→byte, get→git, etc.).
 
+With an Anthropic API key in `[edit]`, Claude applies the correction instead (install with `--extra claude`).
+
 Configure in `~/.config/linux-voice/config.toml`:
 ```toml
 [hotkey_edit]
@@ -259,6 +292,10 @@ modifiers = ["ctrl", "alt"]
 
 [transcription]
 # llm_model = "gpt-4o-mini"  # Override LLM model for corrections
+
+[edit]
+# anthropic_api_key = "sk-ant-..."  # use Claude for corrections
+# model = "claude-opus-5-5"
 ```
 
 ### Delete Hotkey

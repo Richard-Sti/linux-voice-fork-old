@@ -13,3 +13,4 @@ src/
 # uv / pip
 .venv/
 *.egg-info/
+macos/build/
