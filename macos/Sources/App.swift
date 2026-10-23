@@ -9,7 +9,7 @@ let logger = Logger(subsystem: "com.rstiskalek.voicebar", category: "app")
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let minSeconds = 0.3
-    private static let maxSeconds = 120.0
+    private static let maxSeconds = 300.0  // 9.6 MB of audio, under Groq's 25 MB free-tier limit
     private static let silencePeak = 500
 
     private let settings = Settings.shared
@@ -54,6 +54,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         HotkeyCenter.shared.onUp = { [weak self] in self?.hotkeyUp($0) }
         settings.onChange = { [weak self] in self?.applyHotkeys() }
         applyHotkeys()
+        settings.onAudioChange = { [weak self] in self?.applyAudioSettings() }
+        applyAudioSettings()
+
+        // Once the user types or clicks, the cursor may no longer follow the last
+        // dictation, so correcting, deleting or auto-spacing could hit other text.
+        NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard !Typer.isOurs(event) else { return }
+            MainActor.assumeIsolated { self?.forgetLastDictation() }
+        }
 
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
         // Pasting posts a ⌘V keystroke, which needs Accessibility; this prompts once.
@@ -76,6 +85,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         logger.notice("shortcuts: \(bound, privacy: .public)")
         let failed = HotkeyCenter.shared.failed
         if !failed.isEmpty { status = "Shortcut in use by another app: \(failed.joined(separator: ", "))" }
+    }
+
+    private func applyAudioSettings() {
+        recorder.voiceProcessing = settings.voiceProcessing
+        recorder.setWarm(settings.keepMicReady)
+        recorder.restart()
+    }
+
+    private func forgetLastDictation() {
+        lastInserted = ""
+        continuingIn = nil
     }
 
     private func hotkeyDown(_ action: Action) {
@@ -159,7 +179,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fail("Transcription failed: \(error.localizedDescription)")
             return
         }
-        guard !text.isEmpty else { status = "No speech detected"; return }
+        guard !isLikelyHallucination(text) else {
+            status = text.isEmpty ? "No speech detected" : "Ignored “\(text)” (Whisper's filler for noise)"
+            return
+        }
         lastTranscript = text
 
         await Typer.waitForModifierRelease()

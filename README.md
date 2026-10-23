@@ -90,7 +90,7 @@ chmod +x ~/.local/bin/linux-voice
 ```bash
 macos/build.sh          # builds and installs ~/Applications/VoiceBar.app
 open ~/Applications/VoiceBar.app
-macos/check.sh          # offline self-check; add --network to test the API key
+macos/check.sh          # offline self-check; --mic tests recording, --network the API key
 ```
 
 On first launch it imports the hotkeys, backend, language, prompt and API key from `~/.config/linux-voice/config.toml`. Allow it under Privacy & Security › Accessibility (needed to paste) and Microphone. macOS ties these grants to the code signature, so `build.sh` signs with a local self-signed certificate named "VoiceBar Local Signing" when one is in the login keychain; without it the build is signed ad hoc and the grants are lost on every rebuild. To create the certificate once:

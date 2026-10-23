@@ -39,10 +39,18 @@ final class Settings: ObservableObject {
     static let shared = Settings()
     private let defaults = UserDefaults.standard
 
-    /// Called after any change, so the app can re-register shortcuts.
+    /// Called after a shortcut changes, so the app can re-register them.
     var onChange: () -> Void = {}
+    /// Called after a microphone setting changes.
+    var onAudioChange: () -> Void = {}
 
     @Published var hotkeys: [Action: Hotkey] { didSet { saveHotkeys(); onChange() } }
+    @Published var voiceProcessing: Bool {
+        didSet { defaults.set(voiceProcessing, forKey: "voiceProcessing"); onAudioChange() }
+    }
+    @Published var keepMicReady: Bool {
+        didSet { defaults.set(keepMicReady, forKey: "keepMicReady"); onAudioChange() }
+    }
     @Published var holdToTalk: Bool { didSet { defaults.set(holdToTalk, forKey: "holdToTalk") } }
     @Published var provider: String { didSet { defaults.set(provider, forKey: "provider") } }
     @Published var language: String { didSet { defaults.set(language, forKey: "language") } }
@@ -70,6 +78,8 @@ final class Settings: ObservableObject {
         }
         hotkeys = keys
         holdToTalk = d.object(forKey: "holdToTalk") as? Bool ?? false  // default: tap to start and stop
+        voiceProcessing = d.object(forKey: "voiceProcessing") as? Bool ?? true
+        keepMicReady = d.bool(forKey: "keepMicReady")
         provider = d.string(forKey: "provider") ?? "groq"
         language = d.string(forKey: "language") ?? "en"
         vocabulary = d.string(forKey: "vocabulary") ?? ""
@@ -188,6 +198,20 @@ struct SettingsView: View {
                     Text("Press to start, press again to stop").tag(false)
                     Text("Hold the shortcut while speaking").tag(true)
                 }
+            }
+            Section {
+                Toggle("Filter out music and background noise", isOn: $settings.voiceProcessing)
+                Toggle("Keep microphone ready", isOn: $settings.keepMicReady)
+            } header: {
+                Text("Microphone")
+            } footer: {
+                Text("""
+                    Filtering uses Apple's voice processing: it removes sound from the Mac's own speakers, \
+                    suppresses steady noise and lowers other audio while recording. Keeping the microphone \
+                    ready avoids clipping the first word, but macOS then shows its microphone indicator \
+                    all the time.
+                    """)
+                    .foregroundStyle(.secondary)
             }
             Section("Transcription (Whisper)") {
                 Picker("Provider", selection: $settings.provider) {

@@ -1,5 +1,7 @@
 // Self-check for the parts of VoiceBar that run without a GUI.
-// Run: ./check.sh   (pass --network to also send 1 s of silence to the transcription API)
+// Run: ./check.sh [--mic] [--network]
+//   --mic      records 1.5 s through the Recorder, with and without voice processing
+//   --network  sends 1 s of silence to the transcription API
 import Foundation
 
 // Config parsing on a sample with every construct the reader supports.
@@ -38,7 +40,40 @@ assert(peakLevel(pcm) == 0)
 var loud = pcm
 loud.replaceSubrange(100..<102, with: withUnsafeBytes(of: Int16(-1200).littleEndian) { Data($0) })
 assert(peakLevel(loud) == 1200)
+// Whisper's stock phrases are dropped only when they are the whole transcript.
+assert(isLikelyHallucination("Thank you."))
+assert(isLikelyHallucination("  Thanks for watching!  "))
+assert(isLikelyHallucination(""))
+assert(!isLikelyHallucination("Thank you for the referee report."))
+assert(!isLikelyHallucination("The UKIDSS deficit is shallower."))
+
 print("offline checks passed")
+
+// Records 1.5 s through the app's Recorder with and without voice processing;
+// a room is never digitally silent, so a zero peak means the capture is broken.
+if CommandLine.arguments.contains("--mic") {
+    for vp in [false, true] {
+        let recorder = Recorder()
+        recorder.voiceProcessing = vp
+        try recorder.start()
+        Thread.sleep(forTimeInterval: 1.5)
+        let pcm = recorder.stop()
+        let peak = peakLevel(pcm)
+        print("mic check (voice processing \(vp ? "on" : "off")): \(pcm.count / 32000) s, peak \(peak)")
+        if peak == 0 { print("mic check FAILED: silent capture"); exit(1) }
+    }
+
+    // A ready microphone prepends the 0.4 s before start() to the recording.
+    let warm = Recorder()
+    warm.setWarm(true)
+    Thread.sleep(forTimeInterval: 1)
+    try warm.start()
+    Thread.sleep(forTimeInterval: 0.5)
+    let seconds = Double(warm.stop().count) / 32000
+    warm.setWarm(false)
+    print(String(format: "mic check (kept ready): 0.5 s recording holds %.2f s", seconds))
+    if seconds < 0.8 { print("mic check FAILED: no pre-roll"); exit(1) }
+}
 
 if CommandLine.arguments.contains("--network") {
     let real = Config.load()

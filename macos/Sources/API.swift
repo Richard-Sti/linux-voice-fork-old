@@ -26,6 +26,21 @@ private func json(_ data: Data) throws -> [String: Any] {
     return obj
 }
 
+/// Phrases Whisper produces from music, noise or silence (it was trained on
+/// subtitled video). A transcript consisting only of one is dropped.
+private let whisperStockPhrases: Set<String> = [
+    "you", "thank you", "thanks", "thank you very much", "thank you so much",
+    "thanks for watching", "thank you for watching", "thank you so much for watching",
+    "please subscribe", "bye", "subtitles by the amaraorg community",
+]
+
+func isLikelyHallucination(_ transcript: String) -> Bool {
+    let normalised = transcript.lowercased()
+        .filter { $0.isLetter || $0 == " " }
+        .split(separator: " ").joined(separator: " ")
+    return normalised.isEmpty || whisperStockPhrases.contains(normalised)
+}
+
 /// Whisper transcription through an OpenAI-compatible endpoint (Groq or OpenAI).
 struct Transcriber {
     let baseURL: URL

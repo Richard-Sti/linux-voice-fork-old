@@ -5,14 +5,22 @@ enum Typer {
     private static let vKey: CGKeyCode = 9
     private static let deleteKey: CGKeyCode = 51
     static let returnKey: CGKeyCode = 36
+    /// Tag on every key event VoiceBar posts, so its own typing is not taken
+    /// for the user's.
+    static let marker: Int64 = 0x5642_4152
 
     static func press(_ key: CGKeyCode, flags: CGEventFlags = []) {
         let source = CGEventSource(stateID: .hidSystemState)
         for down in [true, false] {
             let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down)
             event?.flags = flags
+            event?.setIntegerValueField(.eventSourceUserData, value: marker)
             event?.post(tap: .cghidEventTap)
         }
+    }
+
+    static func isOurs(_ event: NSEvent) -> Bool {
+        event.cgEvent?.getIntegerValueField(.eventSourceUserData) == marker
     }
 
     /// Waits (up to 1 s) for the user to let go of the hotkey modifiers, so
