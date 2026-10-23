@@ -205,19 +205,26 @@ class MacOS(PlatformInterface):
                     if data:
                         old_contents[t] = data
 
-            # Set clipboard to our text
-            pb.clearContents()
+            # Set clipboard to our text, with the nspasteboard.org markers
+            # that tell clipboard managers not to record it
+            transient = "org.nspasteboard.TransientType"
+            concealed = "org.nspasteboard.ConcealedType"
+            pb.declareTypes_owner_([NSPasteboardTypeString, transient, concealed], None)
             pb.setString_forType_(text, NSPasteboardTypeString)
+            pb.setString_forType_("", transient)
+            pb.setString_forType_("", concealed)
+            our_change = pb.changeCount()
 
             # Paste with Cmd+V using CGEvents (keycode 9 = 'v')
             time.sleep(0.05)
             self._post_key_event(9, flags=kCGEventFlagMaskCommand)
 
-            # Wait for paste event to propagate before restoring clipboard
-            time.sleep(0.25)
+            # Give a slow app time to read the clipboard before restoring it
+            time.sleep(0.5)
 
-            # Restore original clipboard (must declare all types first)
-            if old_contents:
+            # Restore the original clipboard, unless something else has written
+            # to it since (must declare all types first)
+            if old_contents and pb.changeCount() == our_change:
                 pb.declareTypes_owner_(list(old_contents.keys()), None)
                 for ptype, data in old_contents.items():
                     pb.setData_forType_(data, ptype)

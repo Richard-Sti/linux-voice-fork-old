@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 groq = ["groq"]
+claude = ["anthropic>=2.0"]
 macos = [
     "pyobjc-framework-Cocoa",
     "pyobjc-framework-Quartz",

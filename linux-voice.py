@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+import unicodedata
 import wave
 from pathlib import Path
 
@@ -85,10 +87,33 @@ def _parse_modifiers(modifier_names: list[str]) -> set:
     return mods
 
 
+# macOS virtual keycode map for hotkey suppression and vk-based matching
+_VK_MAP = {
+    "space": 49, "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5,
+    "h": 4, "i": 34, "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31,
+    "p": 35, "q": 12, "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "w": 13,
+    "x": 7, "y": 16, "z": 6,
+    "f1": 0x7A, "f2": 0x78, "f3": 0x63, "f4": 0x76, "f5": 0x60, "f6": 0x61,
+    "f7": 0x62, "f8": 0x64, "f9": 0x65, "f10": 0x6D, "f11": 0x67, "f12": 0x6F,
+}
+
+
+def _make_key(name: str):
+    """Create a pynput Key/KeyCode, using vk on macOS for reliable matching."""
+    special = getattr(keyboard.Key, name, None)
+    if special is not None:
+        return special
+    if _IS_MACOS:
+        vk = _VK_MAP.get(name)
+        if vk is not None:
+            return keyboard.KeyCode.from_vk(vk, char=name)
+    return keyboard.KeyCode.from_char(name)
+
+
 # Hotkey configuration
 _hotkey_cfg = CONFIG.get("hotkey", {})
 _key_name = _hotkey_cfg.get("key", "space")
-HOTKEY_KEY = getattr(keyboard.Key, _key_name, keyboard.KeyCode.from_char(_key_name))
+HOTKEY_KEY = _make_key(_key_name)
 _modifier_names = _hotkey_cfg.get("modifiers", _DEFAULT_RECORD_MODS)
 HOTKEY_MODIFIERS = _parse_modifiers(_modifier_names)
 if not HOTKEY_MODIFIERS:
@@ -103,11 +128,7 @@ _required_modifier_types = set(
 # Submit hotkey - same as main hotkey but presses Enter after
 _submit_cfg = CONFIG.get("hotkey_submit", {})
 SUBMIT_DELAY = _submit_cfg.get("delay", 150)  # ms delay before Enter key
-SUBMIT_KEY = getattr(
-    keyboard.Key,
-    _submit_cfg.get("key", "space"),
-    keyboard.KeyCode.from_char(_submit_cfg.get("key", "space")),
-)
+SUBMIT_KEY = _make_key(_submit_cfg.get("key", "space"))
 _submit_modifier_names = _submit_cfg.get("modifiers", _DEFAULT_SUBMIT_MODS)
 SUBMIT_MODIFIERS = _parse_modifiers(_submit_modifier_names)
 if not SUBMIT_MODIFIERS:
@@ -118,11 +139,7 @@ _submit_modifier_types = set(
 
 # Edit hotkey - corrects last transcription via LLM
 _edit_cfg = CONFIG.get("hotkey_edit", {})
-EDIT_KEY = getattr(
-    keyboard.Key,
-    _edit_cfg.get("key", "space"),
-    keyboard.KeyCode.from_char(_edit_cfg.get("key", "space")),
-)
+EDIT_KEY = _make_key(_edit_cfg.get("key", "space"))
 _edit_modifier_names = _edit_cfg.get("modifiers", _DEFAULT_EDIT_MODS)
 EDIT_MODIFIERS = _parse_modifiers(_edit_modifier_names)
 if not EDIT_MODIFIERS:
@@ -135,11 +152,7 @@ _edit_modifier_types = set(
 _DEFAULT_DELETE_MODS = ["cmd", "shift"] if _IS_MACOS else ["ctrl", "shift"]
 _delete_cfg = CONFIG.get("hotkey_delete", {})
 _delete_key_name = _delete_cfg.get("key", "k")
-DELETE_KEY = getattr(
-    keyboard.Key,
-    _delete_key_name,
-    keyboard.KeyCode.from_char(_delete_key_name),
-)
+DELETE_KEY = _make_key(_delete_key_name)
 _delete_modifier_names = _delete_cfg.get("modifiers", _DEFAULT_DELETE_MODS)
 DELETE_MODIFIERS = _parse_modifiers(_delete_modifier_names)
 if not DELETE_MODIFIERS:
@@ -148,10 +161,47 @@ _delete_modifier_types = set(
     "super" if m == "cmd" else m for m in (_delete_modifier_names or _DEFAULT_DELETE_MODS)
 )
 
+# Map modifier type names to CGEvent flag masks
+_MOD_FLAG_MAP = {
+    "cmd": 0x100000, "super": 0x100000,
+    "shift": 0x20000,
+    "ctrl": 0x40000,
+    "alt": 0x80000,
+}
+
+
+def _mod_flags(modifier_names):
+    flags = 0
+    for m in modifier_names:
+        flags |= _MOD_FLAG_MAP.get(m, 0)
+    return flags
+
+
+# Map vk → required CGEvent modifier flags for each hotkey combo
+_SUPPRESS_COMBOS = {}
+if _IS_MACOS:
+    for kn, mod_names in [
+        (_key_name, _modifier_names),
+        (_submit_cfg.get("key", "space"), _submit_cfg.get("modifiers", _DEFAULT_SUBMIT_MODS)),
+        (_edit_cfg.get("key", "space"), _edit_cfg.get("modifiers", _DEFAULT_EDIT_MODS)),
+        (_delete_key_name, _delete_modifier_names),
+    ]:
+        vk = _VK_MAP.get(kn)
+        flags = _mod_flags(mod_names)
+        if vk is not None and flags:
+            _SUPPRESS_COMBOS[vk] = _SUPPRESS_COMBOS.get(vk, 0) | flags
+
 # LLM model for corrections (per backend)
 LLM_MODEL = CONFIG.get("transcription", {}).get("llm_model", None)
 if LLM_MODEL is None:
     LLM_MODEL = "llama-3.3-70b-versatile" if BACKEND == "groq" else "gpt-4o-mini"
+
+# Corrections with Claude when an Anthropic API key is configured in [edit]
+_edit_llm_cfg = CONFIG.get("edit", {})
+ANTHROPIC_API_KEY = (
+    _edit_llm_cfg.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
+)
+CLAUDE_MODEL = _edit_llm_cfg.get("model", "claude-opus-5-5")
 
 
 def apply_replacements(text: str) -> str:
@@ -162,15 +212,25 @@ def apply_replacements(text: str) -> str:
     return text
 
 
-def check_connectivity(timeout: float = 2.0) -> bool:
-    """Quick check for internet connectivity to API endpoint."""
-    import socket
-    host = "api.groq.com" if BACKEND == "groq" else "api.openai.com"
-    try:
-        socket.create_connection((host, 443), timeout=timeout)
-        return True
-    except OSError:
-        return False
+def grapheme_count(text: str) -> int:
+    """Number of Backspace presses needed to delete `text`.
+
+    One Backspace removes a user-perceived character, so combining marks,
+    variation selectors and the character after a zero-width joiner do not
+    count separately.
+    """
+    # ponytail: covers accents, emoji variants and ZWJ emoji; flags and other
+    # multi-codepoint clusters would need the `regex` module's \X.
+    count = 0
+    joined = False
+    for ch in text:
+        if joined:
+            joined = False
+        elif ch == "‍":
+            joined = True
+        elif not (unicodedata.combining(ch) or "︀" <= ch <= "️"):
+            count += 1
+    return count
 
 
 def check_environment(platform):
@@ -221,11 +281,17 @@ def _has_all_modifiers(pressed: set, required_types: set) -> bool:
 class VoiceRecorder:
     def __init__(self, platform):
         if BACKEND == "groq":
-            from groq import Groq
+            from groq import APIConnectionError, Groq
             self.client = Groq()
         else:
-            from openai import OpenAI
+            from openai import APIConnectionError, OpenAI
             self.client = OpenAI()
+        # Raised when the API cannot be reached (APITimeoutError subclasses it)
+        self.connection_error = APIConnectionError
+        self.claude = None
+        if ANTHROPIC_API_KEY:
+            import anthropic
+            self.claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         self.platform = platform
         self.recording = False
         self.audio_data = []
@@ -293,6 +359,25 @@ Follow these rules:
 
 Instruction: {instruction}{context_note}"""
 
+        if self.claude is not None:
+            try:
+                response = self.claude.beta.messages.create(
+                    model=CLAUDE_MODEL,
+                    max_tokens=4096,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                    output_config={"effort": "low"},
+                    betas=["server-side-fallback-2026-07-01"],
+                    fallbacks="default",
+                )
+            except Exception as e:
+                print(f"\033[91mClaude error: {e}\033[0m")
+                return original
+            if response.stop_reason == "refusal":
+                print("\033[91mClaude declined the edit\033[0m")
+                return original
+            return "".join(b.text for b in response.content if b.type == "text").strip()
+
         try:
             response = self.client.chat.completions.create(
                 model=LLM_MODEL,
@@ -349,19 +434,30 @@ Instruction: {instruction}{context_note}"""
                 if self.recording:
                     self.audio_data.append(indata.copy())
 
-            try:
-                stream = sd.InputStream(
-                    samplerate=SAMPLE_RATE,
-                    channels=CHANNELS,
-                    dtype=np.int16,
-                    device=INPUT_DEVICE,
-                    callback=callback,
-                )
-                stream.start()
-            except Exception as e:
-                print(f"\033[91mAudio error: {e}\033[0m", flush=True)
-                self._force_reset_state()
-                return
+            stream = None
+            for attempt in range(2):
+                try:
+                    stream = sd.InputStream(
+                        samplerate=SAMPLE_RATE,
+                        channels=CHANNELS,
+                        dtype=np.int16,
+                        device=INPUT_DEVICE,
+                        callback=callback,
+                    )
+                    stream.start()
+                    break
+                except Exception as e:
+                    if attempt == 0:
+                        print(f"\033[93m⚠ Audio open failed ({e}), resetting PortAudio...\033[0m", flush=True)
+                        try:
+                            sd.abort()
+                        except Exception:
+                            pass
+                        _time.sleep(0.5)
+                    else:
+                        print(f"\033[91mAudio error after retry: {e}\033[0m", flush=True)
+                        self._force_reset_state()
+                        return
 
             # Assign stream under lock — if recording was already stopped
             # while we were opening, close the stream to avoid leaking it.
@@ -424,6 +520,20 @@ Instruction: {instruction}{context_note}"""
             if self._debounce_generation != gen:
                 print(f"  [debounce] cancelled — key re-pressed, kept recording", flush=True)
                 return
+            # On macOS, verify the key is actually released at the hardware level.
+            # The repeat-suppressor CGEventTap swallows repeat key-downs, which
+            # means pynput can miss re-presses and fire spurious on_release events.
+            if _IS_MACOS:
+                try:
+                    import Quartz
+                    vk = getattr(key, 'vk', None) or _VK_MAP.get(_key_name)
+                    if vk is not None and Quartz.CGEventSourceKeyState(
+                        Quartz.kCGEventSourceStateCombinedSessionState, vk
+                    ):
+                        print(f"  [debounce] key still held (CGEventSource) — ignoring spurious release", flush=True)
+                        return
+                except Exception:
+                    pass  # fall through to normal stop
             # Key is still released — actually stop
             if self.recording:
                 print(f"  [debounce] confirmed release — stopping (foreground: {app})", flush=True)
@@ -445,30 +555,25 @@ Instruction: {instruction}{context_note}"""
             edit_mode = self.edit_mode
             active_app = self.active_app
 
-        # Close stream outside lock — run in a separate thread with timeout
-        # so a hung PortAudio close doesn't block transcription or future recordings
+        # Close stream outside lock — fire-and-forget in a daemon thread so a
+        # hung PortAudio close never blocks transcription or future recordings.
+        # If PortAudio is truly stuck, the next start_recording will retry with
+        # sd.abort() to force-reset the audio subsystem.
         if stream:
             def _close_stream():
                 try:
                     stream.stop()
-                except Exception as e:
-                    print(f"\033[91mStream stop error: {e}\033[0m", flush=True)
+                except Exception:
+                    pass
                 try:
                     stream.close()
-                except Exception as e:
-                    print(f"\033[91mStream close error: {e}\033[0m", flush=True)
-            t = threading.Thread(target=_close_stream, daemon=True)
-            t.start()
-            t.join(timeout=2.0)
-            if t.is_alive():
-                print("\033[91m⚠ Stream close timed out — audio device stuck, restarting process\033[0m", flush=True)
-                sys.stdout.flush()
-                sys.stderr.flush()
-                os.execv(sys.executable, [sys.executable] + sys.argv)
-                os._exit(1)  # fallback if execv fails
+                except Exception:
+                    pass
+            threading.Thread(target=_close_stream, daemon=True).start()
 
         if not audio_chunks:
             print("No audio recorded")
+            print("\a\033[1;92m✓ Listening\033[0m", flush=True)
             return
 
         # Combine audio chunks
@@ -478,6 +583,7 @@ Instruction: {instruction}{context_note}"""
         duration = len(audio) / SAMPLE_RATE
         if duration < MIN_RECORDING_SECONDS:
             print(f"(recording too short: {duration:.1f}s)")
+            print("\a\033[1;92m✓ Listening\033[0m", flush=True)
             return
 
         print("\033[93m◌ Processing...\033[0m", flush=True)
@@ -488,38 +594,30 @@ Instruction: {instruction}{context_note}"""
             daemon=True,
         ).start()
 
+    def _save_for_recovery(self, audio: np.ndarray):
+        """Keep audio that could not be sent, and say so in the focused window."""
+        print("\033[91mNo internet connection\033[0m")
+        recovery_path = Path("/tmp/linux-voice-recovery.wav")
+        if recovery_path.exists():
+            # Don't overwrite - just remind user to recover first
+            msg = "(no internet - say 'recover' first)"
+        else:
+            with wave.open(str(recovery_path), "wb") as wf:
+                wf.setnchannels(CHANNELS)
+                wf.setsampwidth(2)
+                wf.setframerate(SAMPLE_RATE)
+                wf.writeframes(audio.tobytes())
+            print(f"Audio saved to {recovery_path}")
+            msg = "(no internet - say 'recover' to retry)"
+        try:
+            self.platform.type_text(msg)
+            self.last_typed_text = msg
+        except Exception:
+            pass
+
     def _transcribe_and_type(self, audio: np.ndarray, submit: bool = False, edit: bool = False, active_app=None):
-        import time
         t0 = time.time()
         try:
-            # Check internet connectivity
-            if not check_connectivity():
-                print("\033[91mNo internet connection\033[0m")
-                # Save audio to temp file for potential recovery (don't overwrite existing)
-                recovery_path = Path("/tmp/linux-voice-recovery.wav")
-                if recovery_path.exists():
-                    # Don't overwrite - just remind user to recover first
-                    msg = "(no internet - say 'recover' first)"
-                    try:
-                        self.platform.type_text(msg)
-                        self.last_typed_text = msg
-                    except Exception:
-                        pass
-                else:
-                    with wave.open(str(recovery_path), "wb") as wf:
-                        wf.setnchannels(CHANNELS)
-                        wf.setsampwidth(2)
-                        wf.setframerate(SAMPLE_RATE)
-                        wf.writeframes(audio.tobytes())
-                    print(f"Audio saved to {recovery_path}")
-                    msg = "(no internet - say 'recover' to retry)"
-                    try:
-                        self.platform.type_text(msg)
-                        self.last_typed_text = msg
-                    except Exception:
-                        pass
-                return
-
             # Convert to MP3 if ffmpeg available, otherwise WAV
             if self.has_ffmpeg:
                 file_buffer = self._convert_to_mp3(audio)
@@ -533,15 +631,19 @@ Instruction: {instruction}{context_note}"""
                 file_buffer.seek(0)
                 file_buffer.name = "audio.wav"
 
-            # Transcribe
-            transcript = self.client.audio.transcriptions.create(
-                model=WHISPER_MODEL,
-                file=file_buffer,
-                language=LANGUAGE,
-                prompt=PROMPT,
-                response_format="text",
-                temperature=0.0,
-            )
+            # Transcribe; no connectivity pre-check, a failed request is the check
+            try:
+                transcript = self.client.audio.transcriptions.create(
+                    model=WHISPER_MODEL,
+                    file=file_buffer,
+                    language=LANGUAGE,
+                    prompt=PROMPT,
+                    response_format="text",
+                    temperature=0.0,
+                )
+            except self.connection_error:
+                self._save_for_recovery(audio)
+                return
             t1 = time.time()
 
             text = transcript.strip()
@@ -577,7 +679,7 @@ Instruction: {instruction}{context_note}"""
                 print(f"\033[94m→ {corrected}\033[0m ({time.time()-t0:.1f}s)", flush=True)
 
                 # Delete the previously typed text
-                self.platform.clear_text(len(self.last_typed_text))
+                self.platform.clear_text(grapheme_count(self.last_typed_text))
 
                 # Type corrected text
                 self.platform.type_text(corrected)
@@ -598,12 +700,13 @@ Instruction: {instruction}{context_note}"""
 
                 # Press Enter if submit mode
                 if submit:
-                    import time
                     time.sleep(SUBMIT_DELAY / 1000)
                     self.platform.press_key("Return")
                     self.all_typed_text = ""
         except Exception as e:
             print(f"\033[91mError: {e}\033[0m")
+        finally:
+            print("\a\033[1;92m✓ Listening\033[0m", flush=True)
 
     def recover_audio(self):
         """Recover and transcribe audio from a failed attempt."""
@@ -623,7 +726,7 @@ Instruction: {instruction}{context_note}"""
         print(f"Recovering audio from {recovery_path}...")
 
         # Clear the "no internet" message first
-        self.platform.clear_text(len(self.last_typed_text))
+        self.platform.clear_text(grapheme_count(self.last_typed_text))
 
         # Transcribe in background
         threading.Thread(
@@ -658,7 +761,7 @@ Instruction: {instruction}{context_note}"""
                     _time.sleep(0.3)
                     self.platform.release_modifiers()
                     _time.sleep(0.05)
-                    self.platform.clear_text(len(text_to_delete))
+                    self.platform.clear_text(grapheme_count(text_to_delete))
                 threading.Thread(target=_do_delete, daemon=True).start()
             else:
                 print("\033[91mNothing to delete\033[0m", flush=True)
@@ -726,7 +829,7 @@ Instruction: {instruction}{context_note}"""
 
         # Track stray hotkey characters leaked while recording
         if self.recording and _key_name and len(_key_name) == 1:
-            if key == keyboard.KeyCode.from_char(_key_name):
+            if key == HOTKEY_KEY:
                 self.stray_key_count += 1
 
     def on_release(self, key):
@@ -743,6 +846,69 @@ Instruction: {instruction}{context_note}"""
         if MODE == "hold" and key in (HOTKEY_KEY, SUBMIT_KEY, EDIT_KEY):
             if self.recording:
                 self._debounced_stop(key)
+
+    def _setup_repeat_suppressor(self):
+        """Suppress auto-repeat key events for hotkey keys on macOS.
+
+        When holding a hotkey (e.g. Cmd+J), the OS generates key repeat events
+        that leak characters into terminal apps. This CGEventTap suppresses
+        only the repeat events — the initial press and the release pass through
+        normally so pynput can still detect them.
+        """
+        if not _IS_MACOS or not _SUPPRESS_COMBOS:
+            return
+        try:
+            import Quartz
+        except ImportError:
+            return
+
+        def _run_tap():
+            tap_ref = [None]
+
+            def _tap_callback(proxy, event_type, event, refcon):
+                if event_type == Quartz.kCGEventTapDisabledByTimeout:
+                    if tap_ref[0] is not None:
+                        Quartz.CGEventTapEnable(tap_ref[0], True)
+                    return event
+                keycode = Quartz.CGEventGetIntegerValueField(
+                    event, Quartz.kCGKeyboardEventKeycode
+                )
+                required_flags = _SUPPRESS_COMBOS.get(keycode)
+                if required_flags is not None:
+                    flags = Quartz.CGEventGetFlags(event)
+                    if (flags & required_flags) == required_flags:
+                        is_repeat = Quartz.CGEventGetIntegerValueField(
+                            event, Quartz.kCGKeyboardEventAutorepeat
+                        )
+                        if is_repeat:
+                            return None  # Suppress repeat — prevents jjjjj
+                        # First press: strip Unicode so no character leaks,
+                        # but pass the event through so pynput sees the vk.
+                        Quartz.CGEventKeyboardSetUnicodeString(event, 0, "")
+                        return event
+                return event
+
+            tap = Quartz.CGEventTapCreate(
+                Quartz.kCGSessionEventTap,
+                Quartz.kCGHeadInsertEventTap,
+                Quartz.kCGEventTapOptionDefault,
+                Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown),
+                _tap_callback,
+                None,
+            )
+            if tap is None:
+                print("  [suppressor] failed to create event tap", flush=True)
+                return
+            tap_ref[0] = tap
+
+            source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
+            loop = Quartz.CFRunLoopGetCurrent()
+            Quartz.CFRunLoopAddSource(loop, source, Quartz.kCFRunLoopCommonModes)
+            Quartz.CGEventTapEnable(tap, True)
+            print("  [suppressor] hotkey repeat suppression active", flush=True)
+            Quartz.CFRunLoopRun()
+
+        threading.Thread(target=_run_tap, daemon=True).start()
 
     def _setup_wake_listener(self):
         """On macOS, exit on wake from sleep so launchd restarts us.
@@ -795,6 +961,7 @@ Instruction: {instruction}{context_note}"""
         print("Press Ctrl+C to exit\n")
 
         self._setup_wake_listener()
+        self._setup_repeat_suppressor()
 
         listener = keyboard.Listener(
             on_press=self.on_press,
@@ -809,6 +976,8 @@ Instruction: {instruction}{context_note}"""
             else:
                 print("Make sure you're running on X11 with proper permissions.")
             sys.exit(1)
+
+        print("\a\033[1;92m✓ Listening\033[0m", flush=True)
 
         # First Ctrl+C exits gracefully; second one force-quits
         import signal
@@ -865,19 +1034,13 @@ def install_agent():
     python_path = sys.executable
     script_path = Path(__file__).resolve()
 
-    # Read API key from config or environment
-    api_key_name = "GROQ_API_KEY" if BACKEND == "groq" else "OPENAI_API_KEY"
-    api_key = (
-        CONFIG.get("transcription", {}).get("api_key", "")
-        or os.environ.get(api_key_name, "")
-    )
+    # The agent reads the API key from config.toml at startup, so the key is
+    # never copied into the plist.
+    if not CONFIG.get("transcription", {}).get("api_key"):
+        print(f"Warning: add api_key to [transcription] in {CONFIG_PATH}; "
+              "the agent does not see your shell's environment variables.")
 
-    env_block = f"""        <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>"""
-    if api_key:
-        env_block = f"""        <key>{api_key_name}</key>
-        <string>{api_key}</string>
-        <key>PATH</key>
+    env_block = """        <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>"""
 
     # Run through /bin/zsh so the process inherits Accessibility permissions
