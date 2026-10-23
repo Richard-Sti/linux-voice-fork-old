@@ -69,7 +69,7 @@ final class Settings: ObservableObject {
             keys[action] = Hotkey(plist: d.object(forKey: "hotkey.\(action)"))
         }
         hotkeys = keys
-        holdToTalk = d.object(forKey: "holdToTalk") as? Bool ?? true
+        holdToTalk = d.object(forKey: "holdToTalk") as? Bool ?? false  // default: tap to start and stop
         provider = d.string(forKey: "provider") ?? "groq"
         language = d.string(forKey: "language") ?? "en"
         vocabulary = d.string(forKey: "vocabulary") ?? ""
@@ -105,7 +105,7 @@ final class Settings: ObservableObject {
         for (action, hk) in seeded {
             if let hk { d.set(hk.plist, forKey: "hotkey.\(action)") }
         }
-        d.set(cfg.string("hotkey", "mode") != "toggle", forKey: "holdToTalk")
+        d.set(cfg.string("hotkey", "mode") == "hold", forKey: "holdToTalk")
         if let v = cfg.string("transcription", "backend") { d.set(v, forKey: "provider") }
         if let v = cfg.string("transcription", "language") { d.set(v, forKey: "language") }
         if let v = cfg.string("transcription", "prompt") { d.set(v, forKey: "vocabulary") }
@@ -185,8 +185,8 @@ struct SettingsView: View {
                 LabeledContent("Correct last dictation") { ShortcutField(action: .edit) }
                 LabeledContent("Delete last dictation") { ShortcutField(action: .delete) }
                 Picker("Recording", selection: $settings.holdToTalk) {
-                    Text("Hold the shortcut while speaking").tag(true)
                     Text("Press to start, press again to stop").tag(false)
+                    Text("Hold the shortcut while speaking").tag(true)
                 }
             }
             Section("Transcription (Whisper)") {
