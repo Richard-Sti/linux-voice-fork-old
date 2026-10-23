@@ -3,6 +3,8 @@ import Cocoa
 
 enum Action: Int, CaseIterable {
     case record, submit, edit, delete
+    /// Escape, bound only while recording or transcribing.
+    case cancel
 }
 
 /// A key plus the exact set of modifiers held with it.
@@ -113,6 +115,25 @@ final class HotkeyCenter {
     /// Lets the shortcut recorder see keys that are currently bound.
     func suspend() { suspended = true; unregister() }
     func resume() { suspended = false; register() }
+
+    private var cancelRef: EventHotKeyRef?
+
+    /// Claims Escape (as `.cancel`) only while enabled, so it works normally
+    /// in other apps the rest of the time. Registered on its own so the other
+    /// shortcuts, and a held hold-to-talk key, are left untouched.
+    func setCancelEnabled(_ enabled: Bool) {
+        if enabled, cancelRef == nil {
+            var ref: EventHotKeyRef?
+            let id = EventHotKeyID(signature: 0x5642_4152, id: UInt32(Action.cancel.rawValue))
+            if RegisterEventHotKey(53 /* Escape */, 0, id, GetEventDispatcherTarget(), 0, &ref) == noErr {
+                cancelRef = ref
+            }
+        } else if !enabled, let ref = cancelRef {
+            UnregisterEventHotKey(ref)
+            cancelRef = nil
+            down.remove(.cancel)
+        }
+    }
 
     private func register() {
         unregister()
