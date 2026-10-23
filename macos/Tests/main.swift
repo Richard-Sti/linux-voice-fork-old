@@ -55,7 +55,10 @@ if CommandLine.arguments.contains("--mic") {
     for vp in [false, true] {
         let recorder = Recorder()
         recorder.voiceProcessing = vp
+        let t0 = Date()
         try recorder.start()
+        print(String(format: "mic check (voice processing %@): start took %.2f s", vp ? "on" : "off",
+                     Date().timeIntervalSince(t0)))
         Thread.sleep(forTimeInterval: 1.5)
         let pcm = recorder.stop()
         let peak = peakLevel(pcm)

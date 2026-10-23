@@ -78,7 +78,7 @@ final class Settings: ObservableObject {
         }
         hotkeys = keys
         holdToTalk = d.object(forKey: "holdToTalk") as? Bool ?? false  // default: tap to start and stop
-        voiceProcessing = d.object(forKey: "voiceProcessing") as? Bool ?? true
+        voiceProcessing = d.bool(forKey: "voiceProcessing")  // off by default: ~1 s slower start
         keepMicReady = d.bool(forKey: "keepMicReady")
         provider = d.string(forKey: "provider") ?? "groq"
         language = d.string(forKey: "language") ?? "en"
@@ -207,9 +207,10 @@ struct SettingsView: View {
             } footer: {
                 Text("""
                     Filtering uses Apple's voice processing: it removes sound from the Mac's own speakers, \
-                    suppresses steady noise and lowers other audio while recording. Keeping the microphone \
-                    ready avoids clipping the first word, but macOS then shows its microphone indicator \
-                    all the time.
+                    suppresses steady noise and lowers other audio while recording, but it takes about a \
+                    second to start, so wait for the start sound before speaking. Keeping the microphone \
+                    ready removes that delay and never clips the first word, but macOS then shows its \
+                    microphone indicator all the time.
                     """)
                     .foregroundStyle(.secondary)
             }

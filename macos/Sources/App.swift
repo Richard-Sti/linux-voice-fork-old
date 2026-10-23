@@ -21,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var state = State.idle {
         didSet {
             updateIcon()
-            HotkeyCenter.shared.setCancelEnabled(state != .idle)
+            HotkeyCenter.shared.setEscapeEnabled(state == .recording)
             switch state {
             case .idle: indicator.hide()
             case .recording: indicator.show(.systemRed, reposition: true)
@@ -31,9 +31,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private let indicator = RecordingIndicator()
     private var recordingID = 0
-    /// Bumped by each transcription and by Escape; a transcription whose
-    /// number is no longer current was cancelled and must not type anything.
-    private var jobID = 0
     private var activeAction = Action.record
     private var targetApp: NSRunningApplication?
 
@@ -103,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func hotkeyDown(_ action: Action) {
-        if action == .cancel { cancel(); return }
+        if action == .escape { stopRecording(); return }  // Escape stops like ⌘J
         if action == .delete { deleteLast(); return }
         switch state {
         case .idle: startRecording(action)
@@ -116,17 +113,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settings.holdToTalk, state == .recording, action == activeAction { stopRecording() }
     }
 
-    /// Escape: discards the recording, or drops a transcription before it is typed.
-    private func cancel() {
-        switch state {
-        case .recording: _ = recorder.stop()
-        case .processing: jobID += 1
-        case .idle: return
-        }
-        status = "Cancelled"
-        state = .idle
-        NSSound(named: "Pop")?.play()
-    }
 
     // MARK: - Recording
 
@@ -171,15 +157,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         state = .processing
         let action = activeAction
         let target = targetApp
-        jobID += 1
-        let job = jobID
         Task {
-            await process(pcm, action: action, target: target, job: job)
-            if jobID == job { state = .idle }
+            await process(pcm, action: action, target: target)
+            state = .idle
         }
     }
 
-    private func process(_ pcm: Data, action: Action, target: NSRunningApplication?, job: Int) async {
+    private func process(_ pcm: Data, action: Action, target: NSRunningApplication?) async {
         guard !settings.transcriptionKey.isEmpty else {
             fail("Add a \(settings.provider.capitalized) API key in Settings")
             openSettings()
@@ -190,8 +174,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let text: String
         do {
             text = try await transcriber().transcribe(wav: wav)
-        } catch _ where job != jobID {
-            return  // cancelled while the request was in flight
         } catch let error as URLError {
             saveRecovery(wav)
             fail("Network error (\(error.code.rawValue)): recording saved, use “Transcribe saved recording”")
@@ -200,7 +182,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fail("Transcription failed: \(error.localizedDescription)")
             return
         }
-        guard job == jobID else { return }  // cancelled with Escape
         guard !isLikelyHallucination(text) else {
             status = text.isEmpty ? "No speech detected" : "Ignored “\(text)” (Whisper's filler for noise)"
             return
@@ -213,9 +194,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try? await Task.sleep(for: .milliseconds(150))
         }
 
-        guard job == jobID else { return }
         if action == .edit {
-            await correctLast(with: text, job: job)
+            await correctLast(with: text)
             return
         }
         let pid = target?.processIdentifier
@@ -232,7 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         status = "Ready"
     }
 
-    private func correctLast(with instruction: String, job: Int) async {
+    private func correctLast(with instruction: String) async {
         let original = lastInserted
         let lead = original.hasPrefix(" ") ? " " : ""
         let editor = makeEditor()
@@ -240,8 +220,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             let corrected = lead + (try await editor.correct(String(original.dropFirst(lead.count)),
                                                              instruction: instruction))
-            // Cancelled, or the user typed or clicked while the model was answering.
-            guard job == jobID, lastInserted == original else { return }
+            // The user typed or clicked while the model was answering.
+            guard lastInserted == original else { return }
             await Typer.deleteBackward(original.count)
             await Typer.paste(corrected)
             lastInserted = corrected
@@ -293,11 +273,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? FileManager.default.removeItem(at: recoveryURL)
         let target = NSWorkspace.shared.frontmostApplication
         state = .processing
-        jobID += 1
-        let job = jobID
         Task {
-            await process(Data(wav.dropFirst(44)), action: .record, target: target, job: job)
-            if jobID == job { state = .idle }
+            await process(Data(wav.dropFirst(44)), action: .record, target: target)
+            state = .idle
         }
     }
 
