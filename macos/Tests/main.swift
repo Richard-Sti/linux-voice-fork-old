@@ -1,6 +1,6 @@
 // Self-check for the parts of VoiceBar that run without a GUI.
 // Run: ./check.sh [--mic] [--network]
-//   --mic      records 1.5 s through the Recorder, with and without voice processing
+//   --mic      records 1.5 s through the Recorder and checks the pre-roll
 //   --network  sends 1 s of silence to the transcription API
 import Foundation
 
@@ -49,22 +49,17 @@ assert(!isLikelyHallucination("The UKIDSS deficit is shallower."))
 
 print("offline checks passed")
 
-// Records 1.5 s through the app's Recorder with and without voice processing;
-// a room is never digitally silent, so a zero peak means the capture is broken.
+// Records 1.5 s through the app's Recorder; a room is never digitally silent,
+// so a zero peak means the capture is broken.
 if CommandLine.arguments.contains("--mic") {
-    for vp in [false, true] {
-        let recorder = Recorder()
-        recorder.voiceProcessing = vp
-        let t0 = Date()
-        try recorder.start()
-        print(String(format: "mic check (voice processing %@): start took %.2f s", vp ? "on" : "off",
-                     Date().timeIntervalSince(t0)))
-        Thread.sleep(forTimeInterval: 1.5)
-        let pcm = recorder.stop()
-        let peak = peakLevel(pcm)
-        print("mic check (voice processing \(vp ? "on" : "off")): \(pcm.count / 32000) s, peak \(peak)")
-        if peak == 0 { print("mic check FAILED: silent capture"); exit(1) }
-    }
+    let recorder = Recorder()
+    let t0 = Date()
+    try recorder.start()
+    let startup = Date().timeIntervalSince(t0)
+    Thread.sleep(forTimeInterval: 1.5)
+    let pcm = recorder.stop()
+    print(String(format: "mic check: start took %.2f s, peak %d", startup, peakLevel(pcm)))
+    if peakLevel(pcm) == 0 { print("mic check FAILED: silent capture"); exit(1) }
 
     // A ready microphone prepends the 0.4 s before start() to the recording.
     let warm = Recorder()

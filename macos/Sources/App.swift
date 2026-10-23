@@ -89,9 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func applyAudioSettings() {
-        recorder.voiceProcessing = settings.voiceProcessing
         recorder.setWarm(settings.keepMicReady)
-        recorder.restart()
     }
 
     private func forgetLastDictation() {

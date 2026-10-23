@@ -6,10 +6,6 @@ final class Recorder {
     /// Audio kept from just before `start()` while the microphone is kept ready.
     private static let prerollBytes = 2 * sampleRate * 4 / 10  // 0.4 s
 
-    /// Apple's voice processing (the FaceTime audio path): echo cancellation of
-    /// the Mac's own output, noise suppression, and ducking of other audio.
-    var voiceProcessing = true
-
     private let outFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16, sampleRate: Double(Recorder.sampleRate),
         channels: 1, interleaved: true)!
@@ -61,13 +57,6 @@ final class Recorder {
         if !keepReady, !isCapturing { stopEngine() }
     }
 
-    /// Rebuilds a running engine so a changed setting takes effect.
-    func restart() {
-        guard engine != nil, !lock.withLock({ capturing }) else { return }
-        stopEngine()
-        try? startEngine()
-    }
-
     // MARK: - Engine
 
     /// A fresh engine per use: one built for a previous microphone can fail or
@@ -75,18 +64,11 @@ final class Recorder {
     private func startEngine() throws {
         let engine = AVAudioEngine()
         let input = engine.inputNode
-        if voiceProcessing {
-            try input.setVoiceProcessingEnabled(true)
-            // Ducking lasts as long as the engine runs, so keep it minimal when
-            // the microphone stays ready between recordings.
-            input.voiceProcessingOtherAudioDuckingConfiguration = .init(
-                enableAdvancedDucking: false, duckingLevel: lock.withLock { warm } ? .min : .default)
-        }
         let inFormat = input.outputFormat(forBus: 0)
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else { throw NoInput() }
         converter = AVAudioConverter(from: inFormat, to: outFormat)
-        // Voice processing delivers the processed signal as 9 identical
-        // channels; without an explicit map the conversion to mono is silent.
+        // Take the first channel of a multichannel input; without an explicit
+        // map the conversion to mono can come out silent.
         converter?.channelMap = [0]
         input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buffer, _ in
             self?.append(buffer)

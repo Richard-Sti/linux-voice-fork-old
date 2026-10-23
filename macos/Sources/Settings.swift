@@ -45,9 +45,6 @@ final class Settings: ObservableObject {
     var onAudioChange: () -> Void = {}
 
     @Published var hotkeys: [Action: Hotkey] { didSet { saveHotkeys(); onChange() } }
-    @Published var voiceProcessing: Bool {
-        didSet { defaults.set(voiceProcessing, forKey: "voiceProcessing"); onAudioChange() }
-    }
     @Published var keepMicReady: Bool {
         didSet { defaults.set(keepMicReady, forKey: "keepMicReady"); onAudioChange() }
     }
@@ -78,7 +75,6 @@ final class Settings: ObservableObject {
         }
         hotkeys = keys
         holdToTalk = d.object(forKey: "holdToTalk") as? Bool ?? false  // default: tap to start and stop
-        voiceProcessing = d.bool(forKey: "voiceProcessing")  // off by default: ~1 s slower start
         keepMicReady = d.bool(forKey: "keepMicReady")
         provider = d.string(forKey: "provider") ?? "groq"
         language = d.string(forKey: "language") ?? "en"
@@ -200,18 +196,11 @@ struct SettingsView: View {
                 }
             }
             Section {
-                Toggle("Filter out music and background noise", isOn: $settings.voiceProcessing)
                 Toggle("Keep microphone ready", isOn: $settings.keepMicReady)
             } header: {
                 Text("Microphone")
             } footer: {
-                Text("""
-                    Filtering uses Apple's voice processing: it removes sound from the Mac's own speakers, \
-                    suppresses steady noise and lowers other audio while recording, but it takes about a \
-                    second to start, so wait for the start sound before speaking. Keeping the microphone \
-                    ready removes that delay and never clips the first word, but macOS then shows its \
-                    microphone indicator all the time.
-                    """)
+                Text("Keeps the microphone running between recordings so the first word is never clipped; macOS then shows its microphone indicator all the time.")
                     .foregroundStyle(.secondary)
             }
             Section("Transcription (Whisper)") {
